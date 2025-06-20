@@ -92,7 +92,7 @@ Reddit Content:
 
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash-exp",  # Updated to more recent model
+            model="gemini-2.5-flash",  # Updated to more recent model
             google_api_key=GEMINI_API_KEY,
             temperature=0.3,  # Slightly lower for more consistent results
             max_tokens=1500,  # Increased for more detailed summaries
@@ -136,7 +136,7 @@ async def process_topic(agent, topic: str) -> str:
             agent_executor = create_react_agent(
                 tools=tools,
                 llm=ChatGoogleGenerativeAI(
-                    model="gemini-1.0-pro",
+                    model="gemini-2.5-flash",
                     google_api_key=GEMINI_API_KEY,
                     temperature=0.3
                 )

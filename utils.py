@@ -178,7 +178,7 @@ Remember: Your only output should be a clean script that is ready to be read out
 
     try:
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash-latest",
+            model="gemini-2.5-flash",
             google_api_key=api_key,
             temperature=0.4,
             max_tokens=1000
@@ -266,7 +266,7 @@ def generate_broadcast_news(api_key, news_data, reddit_data, topics):
         )
 
         llm = ChatGoogleGenerativeAI(
-            model="gemini-1.5-flash-latest",
+            model="gemini-2.5-flash",
             google_api_key=api_key,
             temperature=0.3,
             max_tokens=4000
@@ -408,7 +408,7 @@ def validate_environment():
     if "GEMINI_API_KEY" not in missing_keys:
         try:
             llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash-latest",
+                model="gemini-2.5-flash",
                 google_api_key=required_keys["GEMINI_API_KEY"]
             )
             test_response = llm.invoke("Test connection")
