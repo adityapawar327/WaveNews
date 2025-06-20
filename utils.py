@@ -28,6 +28,10 @@ class MCPOverloadedError(Exception):
     """Custom exception for MCP service overloads"""
     pass
 
+class BrightDataError(Exception):
+    """Custom exception for BrightData API errors"""
+    pass
+
 
 def generate_valid_news_url(keyword: str) -> str:
     """
@@ -57,95 +61,51 @@ def generate_news_urls_to_scrape(list_of_keywords):
         dict: Dictionary mapping keywords to their news URLs
     """
     if not list_of_keywords:
-        return {}
+        raise ValueError("Keywords list cannot be empty")
     
     valid_urls_dict = {}
     for keyword in list_of_keywords:
         try:
-            valid_urls_dict[keyword] = generate_valid_news_url(keyword)
-        except ValueError as e:
-            logger.warning(f"Skipping invalid keyword '{keyword}': {e}")
-            continue
+            url = generate_valid_news_url(keyword)
+            valid_urls_dict[keyword] = url
+        except ValueError:
+            logger.warning(f"Skipping invalid keyword: {keyword}")
     
     return valid_urls_dict
 
 
 def scrape_with_brightdata(url: str) -> str:
     """
-    Scrape a URL using BrightData
-    
-    Args:
-        url: URL to scrape
-        
-    Returns:
-        str: Scraped content
-        
-    Raises:
-        HTTPException: If scraping fails
+    Scrape a URL using BrightData Web Scraper (latest API pattern)
     """
-    api_key = os.getenv('BRIGHTDATA_API_KEY') or os.getenv('BRIGHTDATA_API_TOKEN')
+    api_key = os.getenv('BRIGHTDATA_API_KEY') or os.getenv('API_TOKEN')
     zone = os.getenv('BRIGHTDATA_WEB_UNLOCKER_ZONE') or os.getenv('WEB_UNLOCKER_ZONE')
-    
-    if not api_key:
-        raise HTTPException(status_code=500, detail="BrightData API key not configured")
-    
-    if not zone:
-        raise HTTPException(status_code=500, detail="BrightData zone not configured")
-    
+    if not api_key or not zone:
+        raise HTTPException(status_code=500, detail="BrightData API key or zone missing in environment variables")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-
     payload = {
         "zone": zone,
         "url": url,
         "format": "raw"
     }
-    
     try:
-        response = requests.post(
-            "https://api.brightdata.com/request", 
-            json=payload, 
-            headers=headers,
-            timeout=30
-        )
+        response = requests.post("https://api.brightdata.com/request", json=payload, headers=headers)
         response.raise_for_status()
         return response.text
-    except requests.exceptions.Timeout:
-        raise HTTPException(status_code=504, detail="BrightData request timeout")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"BrightData error: {str(e)}")
 
 
 def clean_html_to_text(html_content: str) -> str:
-    """
-    Clean HTML content to plain text
-    
-    Args:
-        html_content: Raw HTML content
-        
-    Returns:
-        str: Cleaned plain text
-    """
+    """Clean HTML content to plain text"""
     if not html_content:
         return ""
-    
-    try:
-        soup = BeautifulSoup(html_content, "html.parser")
-        
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.decompose()
-        
-        text = soup.get_text(separator="\n")
-        
-        # Clean up whitespace
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        return "\n".join(lines)
-    except Exception as e:
-        logger.error(f"Error cleaning HTML: {e}")
-        return ""
+    soup = BeautifulSoup(html_content, "html.parser")
+    text = soup.get_text(separator="\n")
+    return text.strip()
 
 
 def extract_headlines(cleaned_text: str) -> str:
@@ -335,144 +295,205 @@ def text_to_audio_elevenlabs_sdk(
 ) -> str:
     """
     Converts text to speech using ElevenLabs SDK and saves it to audio/ directory.
-
-    Args:
-        text: Text to convert to speech
-        voice_id: ElevenLabs voice ID
-        model_id: ElevenLabs model ID
-        output_format: Output audio format
-        output_dir: Directory to save audio files
-        api_key: ElevenLabs API key
-
     Returns:
         str: Path to the saved audio file.
-        
-    Raises:
-        ValueError: If API key is missing or text is empty
-        Exception: If TTS conversion fails
     """
-    if not text or not text.strip():
-        raise ValueError("Text cannot be empty")
-    
-    api_key = api_key or os.getenv("ELEVEN_API_KEY")
-    if not api_key:
-        raise ValueError("ElevenLabs API key is required.")
-
     try:
-        # Initialize client
+        api_key = api_key or os.getenv("ELEVEN_API_KEY")
+        if not api_key:
+            raise ValueError("ElevenLabs API key is required.")
         client = ElevenLabs(api_key=api_key)
-
-        # Get the audio generator
         audio_stream = client.text_to_speech.convert(
             text=text,
             voice_id=voice_id,
             model_id=model_id,
             output_format=output_format
         )
-
-        # Ensure output directory exists
         os.makedirs(output_dir, exist_ok=True)
-
-        # Generate unique filename
-        filename = f"tts_elevenlabs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
+        filename = f"tts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
         filepath = os.path.join(output_dir, filename)
-
-        # Write audio chunks to file
         with open(filepath, "wb") as f:
             for chunk in audio_stream:
                 f.write(chunk)
-
-        logger.info(f"Audio saved to: {filepath}")
         return filepath
-
     except Exception as e:
-        logger.error(f"ElevenLabs TTS error: {e}")
-        raise e
-
+        raise HTTPException(status_code=500, detail=f"ElevenLabs error: {str(e)}")
 
 def tts_to_audio(text: str, language: str = 'en') -> str:
     """
     Convert text to speech using gTTS (Google Text-to-Speech) and save to file.
-    
-    Args:
-        text: Input text to convert
-        language: Language code (default: 'en')
-    
-    Returns:
-        str: Path to saved audio file, or None if failed
-    
-    Example:
-        tts_to_audio("Hello world", "en")
+    Returns: str: Path to saved audio file
     """
-    if not text or not text.strip():
-        logger.error("Text cannot be empty")
-        return None
-    
     try:
-        # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = AUDIO_DIR / f"tts_gtts_{timestamp}.mp3"
-        
-        # Create TTS object and save
+        filename = AUDIO_DIR / f"tts_{timestamp}.mp3"
         tts = gTTS(text=text, lang=language, slow=False)
         tts.save(str(filename))
-        
-        logger.info(f"Audio saved to: {filename}")
         return str(filename)
     except Exception as e:
-        logger.error(f"gTTS Error: {str(e)}")
-        return None
-
+        raise HTTPException(status_code=500, detail=f"gTTS error: {str(e)}")
 
 def get_api_keys():
-    """
-    Get API keys from environment variables
-    
-    Returns:
-        dict: Dictionary containing API keys
-    """
-    return {
-        'brightdata_api_key': os.getenv('BRIGHTDATA_API_KEY') or os.getenv('BRIGHTDATA_API_TOKEN'),
-        'brightdata_zone': os.getenv('BRIGHTDATA_WEB_UNLOCKER_ZONE') or os.getenv('WEB_UNLOCKER_ZONE'),
-        'gemini_api_key': os.getenv('GEMINI_API_KEY'),
-        'eleven_api_key': os.getenv('ELEVEN_API_KEY'),
+    """Get and validate API keys"""
+    keys = {
+        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
+        "ELEVEN_API_KEY": os.getenv("ELEVEN_API_KEY"),
+        "BRIGHTDATA_API_KEY": os.getenv("BRIGHTDATA_API_KEY"),
+        "API_TOKEN": os.getenv("API_TOKEN")
     }
-
+    
+    missing = [k for k, v in keys.items() if not v]
+    if missing:
+        raise ValueError(f"Missing required API keys: {', '.join(missing)}")
+    
+    return keys
 
 def validate_environment():
-    """
-    Validate that required environment variables are set
+    """Validate environment setup and test API connections"""
+    errors = []
+    warnings = []
     
-    Raises:
-        ValueError: If required environment variables are missing
-    """
-    api_keys = get_api_keys()
-    missing_keys = []
+    # Check API Keys
+    required_keys = {
+        "GEMINI_API_KEY": os.getenv("GEMINI_API_KEY"),
+        "ELEVEN_API_KEY": os.getenv("ELEVEN_API_KEY"),
+        "API_TOKEN": os.getenv("API_TOKEN"),
+        "WEB_UNLOCKER_ZONE": os.getenv("WEB_UNLOCKER_ZONE")
+    }
     
-    if not api_keys['brightdata_api_key']:
-        missing_keys.append('BRIGHTDATA_API_KEY or BRIGHTDATA_API_TOKEN')
-    if not api_keys['brightdata_zone']:
-        missing_keys.append('BRIGHTDATA_WEB_UNLOCKER_ZONE or WEB_UNLOCKER_ZONE')
-    if not api_keys['gemini_api_key']:
-        missing_keys.append('GEMINI_API_KEY')
-    
+    missing_keys = [k for k, v in required_keys.items() if not v]
     if missing_keys:
-        raise ValueError(f"Missing required environment variables: {', '.join(missing_keys)}")
+        errors.append(f"Missing required API keys: {', '.join(missing_keys)}")
+    
+    # Check audio directory
+    try:
+        if not AUDIO_DIR.exists():
+            AUDIO_DIR.mkdir(parents=True)
+            logger.info(f"Created audio directory at {AUDIO_DIR}")
+    except Exception as e:
+        errors.append(f"Failed to create audio directory: {str(e)}")
+    
+    # Test BrightData connection if credentials are present
+    if all(k not in missing_keys for k in ["API_TOKEN", "WEB_UNLOCKER_ZONE"]):
+        try:
+            # Simple test URL that should always work
+            test_url = "http://example.com"
+            logger.info("Testing BrightData connection...")
+            content = scrape_with_brightdata(test_url)
+            if content and len(content) > 0:
+                logger.info("✓ BrightData connection test successful")
+            else:
+                errors.append("BrightData returned empty response")
+        except Exception as e:
+            errors.append(f"BrightData connection test failed: {str(e)}")
+    else:
+        warnings.append("Skipping BrightData test - missing credentials")
+    
+    # Test ElevenLabs connection
+    if "ELEVEN_API_KEY" not in missing_keys:
+        try:
+            eleven = ElevenLabs(api_key=required_keys["ELEVEN_API_KEY"])
+            # Get available voices to test connection
+            voices = eleven.voices.get_all()
+            if not voices:
+                warnings.append("ElevenLabs: No voices available")
+            else:
+                logger.info("✓ ElevenLabs connection test successful")
+        except Exception as e:
+            errors.append(f"ElevenLabs connection test failed: {str(e)}")
+    else:
+        warnings.append("Skipping ElevenLabs test - missing API key")
+    
+    # Test Gemini connection
+    if "GEMINI_API_KEY" not in missing_keys:
+        try:
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash-latest",
+                google_api_key=required_keys["GEMINI_API_KEY"]
+            )
+            test_response = llm.invoke("Test connection")
+            if test_response:
+                logger.info("✓ Gemini connection test successful")
+        except Exception as e:
+            errors.append(f"Gemini connection test failed: {str(e)}")
+    else:
+        warnings.append("Skipping Gemini test - missing API key")
+    
+    if errors:
+        error_msg = "\n".join(errors)
+        logger.error(f"Environment validation failed:\n{error_msg}")
+        raise ValueError(error_msg)
+    
+    if warnings:
+        for warning in warnings:
+            logger.warning(warning)
+    
+    logger.info("✓ Environment validation completed successfully")
+    return True
 
 
 # Example usage and testing
 if __name__ == "__main__":
     try:
-        # Validate environment
+        # Step 1: Validate environment and connections
         validate_environment()
-        logger.info("Environment validation passed")
         
-        # Example usage
+        # Step 2: Test news URL generation
+        logger.info("\n=== Testing News URL Generation ===")
         keywords = ["artificial intelligence", "climate change"]
         urls = generate_news_urls_to_scrape(keywords)
-        
         for keyword, url in urls.items():
             logger.info(f"Generated URL for '{keyword}': {url}")
+        
+        # Step 3: Test BrightData scraping
+        logger.info("\n=== Testing BrightData Scraping ===")
+        for keyword, url in urls.items():
+            try:
+                logger.info(f"Scraping content for '{keyword}'...")
+                content = scrape_with_brightdata(url)
+                cleaned_text = clean_html_to_text(content)
+                headlines = extract_headlines(cleaned_text)
+                logger.info(f"Found {len(headlines.split('\\n'))} headlines for '{keyword}'")
+            except Exception as e:
+                logger.error(f"Error scraping '{keyword}': {str(e)}")
+        
+        # Step 4: Test Gemini summarization
+        logger.info("\n=== Testing Gemini Summarization ===")
+        try:
+            test_headlines = """
+            Latest developments in AI show promising results
+            Climate change impacts worse than expected
+            New AI models break performance records
+            Global temperature rise accelerates
+            """
+            summary = summarize_with_gemini_news_script(
+                os.getenv("GEMINI_API_KEY"),
+                test_headlines
+            )
+            logger.info("Successfully generated summary")
+            logger.info(f"Summary preview: {summary[:200]}...")
+        except Exception as e:
+            logger.error(f"Error in Gemini summarization: {str(e)}")
+        
+        # Step 5: Test text-to-speech
+        logger.info("\n=== Testing Text-to-Speech ===")
+        try:
+            test_text = "This is a test of the text-to-speech system."
+            # Test ElevenLabs
+            audio_path = text_to_audio_elevenlabs_sdk(
+                text=test_text,
+                output_dir="audio"
+            )
+            logger.info(f"Successfully generated audio file: {audio_path}")
             
+            # Test fallback TTS
+            fallback_path = tts_to_audio(test_text)
+            logger.info(f"Successfully generated fallback audio: {fallback_path}")
+        except Exception as e:
+            logger.error(f"Error in text-to-speech: {str(e)}")
+        
+        logger.info("\n=== Test Complete ===")
+        
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"Test failed: {str(e)}")
+        raise

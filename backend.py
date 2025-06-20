@@ -1,10 +1,11 @@
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from pathlib import Path
 from dotenv import load_dotenv
 import asyncio
 import logging
+import uvicorn
 
 from models import NewsRequest
 from utils import generate_broadcast_news, text_to_audio_elevenlabs_sdk
@@ -66,9 +67,9 @@ async def health_check():
 
 
 @app.post("/generate-news-audio")
-async def generate_news_audio(request: NewsRequest):
+async def generate_news_audio(request: NewsRequest, audio: bool = Query(False)):
     """
-    Generate audio summary from news and/or Reddit content
+    Generate news summary (and optionally audio) from news and/or Reddit content
     """
     try:
         logger.info(f"Processing request for topics: {request.topics}, source: {request.source_type}")
@@ -88,9 +89,10 @@ async def generate_news_audio(request: NewsRequest):
         # Scrape news data
         if request.source_type in ["news", "both"]:
             try:
-                logger.info("Scraping news data...")
                 news_scraper = NewsScraper()
-                results["news"] = await news_scraper.scrape_news(request.topics)
+                news_results = await news_scraper.scrape_news(request.topics)
+                if news_results:
+                    results["news"] = news_results.get("news_analysis", {})
                 logger.info(f"News data scraped successfully: {len(results.get('news', {}))} items")
             except Exception as e:
                 logger.error(f"Error scraping news: {str(e)}")
@@ -99,8 +101,9 @@ async def generate_news_audio(request: NewsRequest):
         # Scrape Reddit data
         if request.source_type in ["reddit", "both"]:
             try:
-                logger.info("Scraping Reddit data...")
-                results["reddit"] = await scrape_reddit_topics(request.topics)
+                reddit_results = await scrape_reddit_topics(request.topics)
+                if reddit_results:
+                    results["reddit"] = reddit_results.get("reddit_analysis", {})
                 logger.info(f"Reddit data scraped successfully: {len(results.get('reddit', {}))} items")
             except Exception as e:
                 logger.error(f"Error scraping Reddit: {str(e)}")
@@ -128,8 +131,8 @@ async def generate_news_audio(request: NewsRequest):
             
             if not news_summary or len(news_summary.strip()) == 0:
                 raise HTTPException(
-                    status_code=500, 
-                    detail="Failed to generate news summary - empty content"
+                    status_code=500,
+                    detail="Failed to generate news summary - empty response"
                 )
                 
         except Exception as e:
@@ -139,12 +142,16 @@ async def generate_news_audio(request: NewsRequest):
                 detail=f"Failed to generate news summary: {str(e)}"
             )
         
+        # If only text is requested, return it
+        if not audio:
+            return {"summary": news_summary}
+        
         # Generate audio
         logger.info("Converting text to audio...")
         try:
             audio_path = text_to_audio_elevenlabs_sdk(
                 text=news_summary,
-                voice_id="JBFqnCBsd6RMkjVDRZzb",  # Consider making this configurable
+                voice_id="JBFqnCBsd6RMkjVDRZzb",
                 model_id="eleven_multilingual_v2",
                 output_format="mp3_44100_128",
                 output_dir="audio"
@@ -152,47 +159,31 @@ async def generate_news_audio(request: NewsRequest):
             
             if not audio_path:
                 raise HTTPException(
-                    status_code=500, 
-                    detail="Failed to generate audio - no file path returned"
+                    status_code=500,
+                    detail="Failed to generate audio file"
                 )
             
             audio_file_path = Path(audio_path)
             if not audio_file_path.exists():
                 raise HTTPException(
-                    status_code=500, 
-                    detail=f"Generated audio file not found: {audio_path}"
+                    status_code=500,
+                    detail="Generated audio file not found"
                 )
             
             # Read and return audio file
             try:
-                with open(audio_file_path, "rb") as f:
-                    audio_bytes = f.read()
-                
-                if not audio_bytes:
-                    raise HTTPException(
-                        status_code=500, 
-                        detail="Generated audio file is empty"
-                    )
-                
-                logger.info(f"Audio generated successfully: {len(audio_bytes)} bytes")
-                
-                # Optional: Clean up the file after reading
-                # audio_file_path.unlink()  # Uncomment if you want to delete after serving
-                
+                audio_data = audio_file_path.read_bytes()
                 return Response(
-                    content=audio_bytes,
+                    content=audio_data,
                     media_type="audio/mpeg",
-                    headers={
-                        "Content-Disposition": "attachment; filename=news-summary.mp3",
-                        "Content-Length": str(len(audio_bytes))
-                    }
+                    headers={"Content-Disposition": f"attachment; filename={audio_file_path.name}"}
                 )
                 
             except IOError as e:
                 logger.error(f"Error reading audio file: {str(e)}")
                 raise HTTPException(
-                    status_code=500, 
-                    detail=f"Failed to read generated audio file: {str(e)}"
+                    status_code=500,
+                    detail=f"Error reading audio file: {str(e)}"
                 )
                 
         except HTTPException:
@@ -215,8 +206,6 @@ async def generate_news_audio(request: NewsRequest):
 
 
 if __name__ == "__main__":
-    import uvicorn
-    
     # Validate environment before starting server
     try:
         # Test if we can access required services

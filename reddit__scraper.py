@@ -130,78 +130,31 @@ async def process_topic(agent, topic: str) -> str:
     logger.info(f"Processing Reddit topic: {topic}")
     
     async with mcp_limiter:
-        system_message = f"""
-You are a Reddit analysis expert. Use the available tools to find and analyze Reddit posts about the given topic.
-
-Instructions:
-1. Search for the top 3-5 most relevant and recent posts about '{topic}'
-2. Only include posts from after {two_weeks_ago_str} - ignore older content
-3. Extract key content, comments, and discussion points
-4. Focus on high-quality posts with good engagement
-5. Provide raw content for further analysis
-
-Topic: {topic}
-"""
-
-        user_message = f"""
-Find and analyze recent Reddit posts about '{topic}'. 
-Look for:
-- Popular posts with good discussion
-- Recent posts (after {two_weeks_ago_str})
-- Diverse perspectives and opinions
-- Interesting comments and discussions
-
-Please provide the raw content and key information from these posts.
-"""
-
-        messages = [
-            {
-                "role": "system",
-                "content": system_message
-            },
-            {
-                "role": "user",
-                "content": user_message
-            }
-        ]
-        
         try:
-            logger.info(f"Invoking agent for topic: {topic}")
-            response = await asyncio.wait_for(
-                agent.ainvoke({"messages": messages}), 
-                timeout=180  # 3 minute timeout
+            # Use MCP to search Reddit for relevant content
+            tools = await load_mcp_tools(agent, {"reddit_search": True})
+            agent_executor = create_react_agent(
+                tools=tools,
+                llm=ChatGoogleGenerativeAI(
+                    model="gemini-1.0-pro",
+                    google_api_key=GEMINI_API_KEY,
+                    temperature=0.3
+                )
             )
             
-            if not response or "messages" not in response:
-                raise RedditScrapingError("Invalid response format from agent")
+            query = f"Search Reddit for discussions about {topic} from the last two weeks"
+            result = await agent_executor.ainvoke({"input": query})
             
-            reddit_content = response["messages"][-1].content
+            if "overloaded" in str(result).lower():
+                raise MCPOverloadedError("MCP service is overloaded")
             
-            if not reddit_content or reddit_content.strip() == "":
-                logger.warning(f"Empty content returned for topic: {topic}")
-                return f"No Reddit content found for topic '{topic}'"
-            
-            logger.info(f"Successfully retrieved Reddit content for topic: {topic}")
-            
-            # Generate summary using Gemini
-            summary = gemini_summarize_reddit(topic, reddit_content)
+            # Summarize Reddit content
+            summary = gemini_summarize_reddit(topic, str(result))
             return summary
             
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout processing topic: {topic}")
-            raise RedditScrapingError(f"Timeout processing topic: {topic}")
-            
         except Exception as e:
-            error_str = str(e).lower()
-            if any(keyword in error_str for keyword in ["overload", "rate limit", "too many requests"]):
-                logger.warning(f"Service overloaded for topic: {topic}")
-                raise MCPOverloadedError(f"Service overloaded for topic: {topic}")
-            elif any(keyword in error_str for keyword in ["connection", "network", "timeout"]):
-                logger.error(f"Connection error for topic: {topic}")
-                raise ConnectionError(f"Connection error for topic: {topic}")
-            else:
-                logger.error(f"Unexpected error processing topic '{topic}': {str(e)}")
-                raise RedditScrapingError(f"Error processing topic '{topic}': {str(e)}")
+            logger.error(f"Error processing topic '{topic}': {str(e)}")
+            return f"Error processing topic '{topic}': {str(e)}"
 
 async def scrape_reddit_topics(topics: List[str]) -> Dict[str, Any]:
     """
@@ -215,59 +168,35 @@ async def scrape_reddit_topics(topics: List[str]) -> Dict[str, Any]:
     
     try:
         async with stdio_client(server_params) as (read, write):
-            async with ClientSession(read, write) as session:
-                logger.info("Initializing MCP session...")
-                await session.initialize()
-                
-                logger.info("Loading MCP tools...")
-                tools = await load_mcp_tools(session)
-                
-                if not tools:
-                    raise RedditScrapingError("No MCP tools available")
-                
-                logger.info(f"Loaded {len(tools)} MCP tools")
-                
-                # Create agent with proper LLM
-                llm = ChatGoogleGenerativeAI(
-                    model="gemini-2.0-flash-exp",
-                    google_api_key=GEMINI_API_KEY,
-                    temperature=0.3
-                )
-                agent = create_react_agent(llm, tools)
-                
-                reddit_results = {}
-                errors = []
-                
-                for i, topic in enumerate(topics):
-                    try:
-                        logger.info(f"Processing topic {i+1}/{len(topics)}: {topic}")
-                        summary = await process_topic(agent, topic)
-                        reddit_results[topic] = summary
-                        
-                        # Rate limiting between topics
-                        if i < len(topics) - 1:  # Don't wait after the last topic
-                            logger.info(f"Waiting 10 seconds before processing next topic...")
-                            await asyncio.sleep(10)
-                            
-                    except Exception as e:
-                        error_msg = f"Failed to process topic '{topic}': {str(e)}"
-                        logger.error(error_msg)
-                        errors.append(error_msg)
-                        reddit_results[topic] = f"Error: {str(e)}"
-                
-                result = {
-                    "reddit_analysis": reddit_results,
-                    "total_topics": len(topics),
-                    "successful_topics": len([v for v in reddit_results.values() if not v.startswith("Error:")]),
-                    "failed_topics": len(errors),
-                    "errors": errors,
-                    "timestamp": datetime.now().isoformat(),
-                    "date_filter": two_weeks_ago_str
-                }
-                
-                logger.info(f"Reddit scraping completed. Success: {result['successful_topics']}/{len(topics)}")
-                return result
-                
+            agent = (read, write)
+            
+            reddit_analysis = {}
+            errors = []
+            successful_topics = 0
+            
+            # Process each topic
+            for topic in topics:
+                try:
+                    result = await process_topic(agent, topic)
+                    if not result.startswith("Error:"):
+                        reddit_analysis[topic] = result
+                        successful_topics += 1
+                    else:
+                        errors.append(result)
+                except Exception as e:
+                    error_msg = f"Failed to process topic '{topic}': {str(e)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+            
+            return {
+                "reddit_analysis": reddit_analysis,
+                "total_topics": len(topics),
+                "successful_topics": successful_topics,
+                "failed_topics": len(topics) - successful_topics,
+                "errors": errors,
+                "timestamp": datetime.now().isoformat(),
+                "date_filter": two_weeks_ago_str
+            }
     except Exception as e:
         error_msg = f"Failed to initialize Reddit scraping: {str(e)}"
         logger.error(error_msg)

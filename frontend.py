@@ -44,6 +44,8 @@ def main():
         st.session_state.input_key = 0
     if 'generated_audio' not in st.session_state:
         st.session_state.generated_audio = None
+    if 'generated_summary' not in st.session_state:
+        st.session_state.generated_summary = None
 
     # Sidebar for settings
     with st.sidebar:
@@ -120,6 +122,7 @@ def main():
             if st.button("🧹 Clear All Topics", type="secondary"):
                 st.session_state.topics = []
                 st.session_state.generated_audio = None
+                st.session_state.generated_summary = None
                 st.rerun()
     else:
         st.info("👆 Add topics above to get started")
@@ -139,27 +142,29 @@ def main():
     with col1:
         generate_disabled = len(st.session_state.topics) == 0
         if st.button(
-            "🚀 Generate Audio Summary", 
+            "📝 Generate Summary", 
             disabled=generate_disabled,
             type="primary",
-            help="Generate AI audio summary from selected topics and sources"
+            help="Generate AI summary from selected topics and sources"
         ):
-            generate_audio_summary(source_type)
-    
-    with col2:
-        if st.session_state.generated_audio:
-            st.download_button(
-                "💾 Download Audio",
-                data=st.session_state.generated_audio,
-                file_name=f"opinionwave-summary-{int(time.time())}.mp3",
-                mime="audio/mpeg",
-                help="Download the generated audio file"
-            )
-
-    # Display generated audio
+            st.session_state.generated_audio = None
+            generate_summary(source_type)
+    # Show summary and audio options
+    if st.session_state.generated_summary:
+        st.markdown("#### 📝 Generated Summary")
+        st.write(st.session_state.generated_summary)
+        if st.button("🔊 Generate Audio from Summary"):
+            generate_audio_from_summary()
     if st.session_state.generated_audio:
         st.markdown("#### 🎵 Generated Audio Summary")
         st.audio(st.session_state.generated_audio, format="audio/mpeg")
+        st.download_button(
+            "💾 Download Audio",
+            data=st.session_state.generated_audio,
+            file_name=f"opinionwave-summary-{int(time.time())}.mp3",
+            mime="audio/mpeg",
+            help="Download the generated audio file"
+        )
 
 def check_backend_status():
     """Check if backend server is running"""
@@ -176,81 +181,86 @@ def check_backend_status():
     except Exception as e:
         st.error(f"❌ Error checking backend: {str(e)}")
 
-def generate_audio_summary(source_type):
-    """Generate audio summary from topics"""
+def generate_summary(source_type):
+    """Generate summary text from topics"""
     if not st.session_state.topics:
         st.error("❌ Please add at least one topic")
         return
-    
-    # Progress tracking
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
     try:
-        # Update progress
         progress_bar.progress(10)
         status_text.text("🔄 Connecting to backend...")
-        
-        # Make API request
         payload = {
             "topics": st.session_state.topics,
             "source_type": source_type
         }
-        
         progress_bar.progress(30)
         status_text.text("📡 Sending request to backend...")
-        
         response = requests.post(
-            f"{BACKEND_URL}/generate-news-audio",
+            f"{BACKEND_URL}/generate-news-audio?audio=false",
             json=payload,
-            timeout=120  # 2 minutes timeout for audio generation
+            timeout=120
         )
-        
         progress_bar.progress(70)
-        status_text.text("🎵 Processing audio response...")
-        
+        status_text.text("📝 Processing summary response...")
         if response.status_code == 200:
             progress_bar.progress(100)
-            status_text.text("✅ Audio generated successfully!")
-            
-            # Store audio in session state
-            st.session_state.generated_audio = response.content
-            
-            # Clear progress indicators after a moment
+            status_text.text("✅ Summary generated successfully!")
+            st.session_state.generated_summary = response.json().get("summary", "")
             time.sleep(1)
             progress_bar.empty()
             status_text.empty()
-            
-            st.success("🎉 Audio summary generated successfully!")
-            st.balloons()
-            
+            st.success("📝 Summary generated successfully!")
         else:
             progress_bar.empty()
             status_text.empty()
             handle_api_error(response)
-            
-    except requests.exceptions.ConnectionError:
-        progress_bar.empty()
-        status_text.empty()
-        st.error("🔌 **Connection Error**: Could not reach the backend server")
-        st.info(f"💡 Make sure the backend is running at: {BACKEND_URL}")
-        
-    except requests.exceptions.Timeout:
-        progress_bar.empty()
-        status_text.empty()
-        st.error("⏱️ **Timeout Error**: The request took too long to complete")
-        st.info("💡 Try again with fewer topics or check your internet connection")
-        
-    except requests.exceptions.RequestException as e:
-        progress_bar.empty()
-        status_text.empty()
-        st.error(f"🌐 **Network Error**: {str(e)}")
-        
     except Exception as e:
         progress_bar.empty()
         status_text.empty()
         st.error(f"⚠️ **Unexpected Error**: {str(e)}")
-        st.info("💡 Please try again or contact support if the issue persists")
+
+def generate_audio_from_summary():
+    """Generate audio from the summary text"""
+    if not st.session_state.get("generated_summary"):
+        st.error("No summary to convert to audio.")
+        return
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    try:
+        progress_bar.progress(10)
+        status_text.text("🔄 Connecting to backend for audio...")
+        payload = {
+            "topics": st.session_state.topics,
+            "source_type": st.session_state.get("source_type", "both")
+        }
+        progress_bar.progress(30)
+        status_text.text("📡 Sending request to backend...")
+        response = requests.post(
+            f"{BACKEND_URL}/generate-news-audio?audio=true",
+            json=payload,
+            timeout=120
+        )
+        progress_bar.progress(70)
+        status_text.text("🎵 Processing audio response...")
+        if response.status_code == 200:
+            progress_bar.progress(100)
+            status_text.text("✅ Audio generated successfully!")
+            st.session_state.generated_audio = response.content
+            time.sleep(1)
+            progress_bar.empty()
+            status_text.empty()
+            st.success("🎉 Audio summary generated successfully!")
+            st.balloons()
+        else:
+            progress_bar.empty()
+            status_text.empty()
+            handle_api_error(response)
+    except Exception as e:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"⚠️ **Unexpected Error**: {str(e)}")
 
 def handle_api_error(response):
     """Handle API error responses with detailed feedback"""

@@ -1,0 +1,15 @@
+streamlit
+fastapi
+python-dotenv
+beautifulsoup4
+lxml
+elevenlabs
+aiolimiter
+langgraph
+mcp
+langchain-mcp-adapters
+gtts
+langchain-google-genai
+uvicorn
+requests
+python-multipart

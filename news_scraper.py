@@ -65,7 +65,7 @@ class NewsScraper:
         
         # Limit number of topics to prevent overload
         if len(valid_topics) > 10:
-            logger.warning(f"Too many topics ({len(valid_topics)}), limiting to first 10")
+            logger.warning("Too many topics provided, limiting to first 10")
             valid_topics = valid_topics[:10]
         
         return valid_topics
@@ -76,7 +76,9 @@ class NewsScraper:
         retry=retry_if_exception_type((BrightDataError, ConnectionError, TimeoutError))
     )
     async def _scrape_topic(self, topic: str) -> str:
-        """Scrape news for a single topic with retry logic"""
+        """
+        Scrape news content for a single topic
+        """
         logger.info(f"Scraping news for topic: {topic}")
         
         try:
@@ -154,38 +156,26 @@ class NewsScraper:
     async def _async_scrape_with_brightdata(self, urls) -> str:
         """Async wrapper for BrightData scraping"""
         try:
-            # Run the synchronous scraping function in a thread pool
-            loop = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, scrape_with_brightdata, urls),
-                timeout=60  # 60 second timeout
-            )
-            return result
+            content = scrape_with_brightdata(urls)
+            return content
         except asyncio.TimeoutError:
-            raise TimeoutError("BrightData scraping timeout")
+            logger.error("BrightData scraping timed out")
+            raise
         except Exception as e:
-            raise BrightDataError(f"BrightData scraping error: {str(e)}")
+            logger.error(f"BrightData scraping error: {str(e)}")
+            raise BrightDataError(str(e))
 
     async def _async_summarize_with_gemini(self, headlines: List[str], topic: str) -> str:
         """Async wrapper for Gemini summarization"""
         try:
-            # Run the synchronous summarization function in a thread pool
-            loop = asyncio.get_event_loop()
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    None, 
-                    summarize_with_gemini_news_script,
-                    self.api_key,
-                    headlines,
-                    topic  # Pass topic for better context
-                ),
-                timeout=30  # 30 second timeout
-            )
-            return result
+            summary = summarize_with_gemini_news_script(self.api_key, headlines)
+            return summary
         except asyncio.TimeoutError:
-            raise TimeoutError("Gemini summarization timeout")
+            logger.error("Gemini summarization timed out")
+            raise
         except Exception as e:
-            raise Exception(f"Gemini summarization error: {str(e)}")
+            logger.error(f"Gemini summarization error: {str(e)}")
+            raise
 
     async def scrape_news(self, topics: List[str]) -> Dict[str, Any]:
         """
